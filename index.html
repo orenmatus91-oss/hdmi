@@ -490,36 +490,61 @@ const cDoc=id=>doc(db,'users',currentUser.uid,'convs',id);
 const mCol=()=>collection(db,'users',currentUser.uid,'memory');
 const mDoc=id=>doc(db,'users',currentUser.uid,'memory',id);
 
-// ── Auth ──
 // ── Email/Password Auth ──
 let authMode='signin';
+let authBusy=false;
+
+function resetAuthBtn(){
+  authBusy=false;
+  const btn=G('authSubmitBtn');
+  if(btn){btn.disabled=false;btn.textContent=authMode==='signin'?'Sign In':'Create Account';}
+}
+
 G('authToggleBtn').addEventListener('click',()=>{
   authMode=authMode==='signin'?'signup':'signin';
-  G('authSubmitBtn').textContent=authMode==='signin'?'Sign In':'Create Account';
+  resetAuthBtn();
   G('authToggleBtn').textContent=authMode==='signin'?"Don't have an account? Create one":"Already have an account? Sign in";
   G('authError').textContent='';
 });
-G('authSubmitBtn').addEventListener('click',async()=>{
-  const email=G('authEmail').value.trim();
-  const pass=G('authPassword').value;
+
+async function doAuth(){
+  if(authBusy)return;
+  const email=(G('authEmail').value||'').trim();
+  const pass=G('authPassword').value||'';
   G('authError').textContent='';
-  if(!email||!pass){G('authError').textContent='Please enter email and password.';return;}
+  if(!email||!pass){G('authError').textContent='Please enter your email and password.';return;}
+  authBusy=true;
   G('authSubmitBtn').disabled=true;
   G('authSubmitBtn').textContent='Please wait…';
+  // Safety reset after 10s in case something hangs
+  const safetyTimer=setTimeout(resetAuthBtn,10000);
   try{
     if(authMode==='signup'){
       await createUserWithEmailAndPassword(auth,email,pass);
     }else{
       await signInWithEmailAndPassword(auth,email,pass);
     }
+    clearTimeout(safetyTimer);
+    // onAuthStateChanged will handle the rest
   }catch(e){
-    const msgs={'auth/email-already-in-use':'That email is already registered. Sign in instead.','auth/user-not-found':'No account found. Create one first.','auth/wrong-password':'Incorrect password.','auth/invalid-email':'Please enter a valid email.','auth/weak-password':'Password must be at least 6 characters.','auth/invalid-credential':'Incorrect email or password.'};
-    G('authError').textContent=msgs[e.code]||e.message||'Something went wrong.';
-    G('authSubmitBtn').disabled=false;
-    G('authSubmitBtn').textContent=authMode==='signin'?'Sign In':'Create Account';
+    clearTimeout(safetyTimer);
+    const msgs={
+      'auth/email-already-in-use':'That email is already registered. Try signing in.',
+      'auth/user-not-found':'No account found with that email. Create one first.',
+      'auth/wrong-password':'Incorrect password. Please try again.',
+      'auth/invalid-email':'Please enter a valid email address.',
+      'auth/weak-password':'Password must be at least 6 characters.',
+      'auth/invalid-credential':'Incorrect email or password.',
+      'auth/too-many-requests':'Too many attempts. Please wait a moment and try again.',
+      'auth/network-request-failed':'Network error. Check your connection and try again.',
+    };
+    G('authError').textContent=msgs[e.code]||('Error: '+e.message);
+    resetAuthBtn();
   }
-});
-G('authPassword').addEventListener('keydown',e=>{if(e.key==='Enter')G('authSubmitBtn').click();});
+}
+
+G('authSubmitBtn').addEventListener('click', doAuth);
+G('authPassword').addEventListener('keydown',e=>{if(e.key==='Enter')doAuth();});
 G('authEmail').addEventListener('keydown',e=>{if(e.key==='Enter')G('authPassword').focus();});
 
 G('signOutBtn').addEventListener('click',async()=>{
@@ -906,14 +931,36 @@ async function sendToApi(conv){
   if(!allKeys.length){finishSend();toast('No valid keys','err');return;}
   const sp=allKeys.findIndex(x=>x.i===pd.activeKeyIdx);const ordered=[...allKeys.slice(sp>=0?sp:0),...allKeys.slice(0,sp>=0?sp:0)];
   const mem=state.memory.length?'User memory:\n'+state.memory.map(m=>'- '+m.text).join('\n')+'\n\n':'';
-  // Web search injection
+  // Context enrichment (web search + free APIs)
   const lastMsg=(conv.messages||[]).filter(m=>m.role==='user').pop();
-  let searchCtx=null;
-  if(lastMsg&&needsSearch(lastMsg.content||'')){
-    toast('🌐 Searching the web…','info');
-    searchCtx=await tavilySearch(lastMsg.content.slice(0,200));
-    if(searchCtx)toast('🌐 Search results injected','ok');
+  const q=(lastMsg?.content||'').trim();
+  let ctxParts=[];
+  if(q){
+    // Weather
+    if(WEATHER_TRIGGERS.test(q)){
+      toast('🌤 Fetching weather…','info');
+      const wx=await getWeather(q);
+      if(wx)ctxParts.push(wx);
+    }
+    // Dictionary
+    if(DICT_TRIGGERS.test(q)){
+      const def=await getDictionary(q);
+      if(def)ctxParts.push(def);
+    }
+    // Country info
+    if(COUNTRY_TRIGGERS.test(q)){
+      const co=await getCountryInfo(q);
+      if(co)ctxParts.push(co);
+    }
+    // Web search (Tavily)
+    if(needsSearch(q)){
+      toast('🌐 Searching the web…','info');
+      const sr=await tavilySearch(q.slice(0,200));
+      if(sr)ctxParts.push(sr);
+    }
+    if(ctxParts.length)toast('✨ Live data injected','ok');
   }
+  const searchCtx=ctxParts.length?ctxParts.join('\n\n---\n\n'):null;
   await tryKeys(conv,pid,ordered,0,mem,searchCtx);
 }
 
@@ -937,10 +984,118 @@ async function tryKeys(conv,pid,ordered,idx,mem,searchCtx){
 
 // ── Web Search (Tavily) ──
 const SEARCH_TRIGGERS=/\b(today|tonight|yesterday|this week|this month|current|latest|recent|now|breaking|news|weather|price|stock|score|live|update|2024|2025|2026|who is|what is happening|trending|just announced|released|launched)\b/i;
+const WEATHER_TRIGGERS=/\b(weather|forecast|temperature|rain|snow|wind|humidity|sunny|cloudy|storm|hot|cold|degrees|celsius|fahrenheit|climate today|will it rain|should i bring)\b/i;
+const DICT_TRIGGERS=/\b(define|definition|what does .+ mean|meaning of|synonym|antonym|what is the word|spell|vocabulary)\b/i;
+const COUNTRY_TRIGGERS=/\b(country|countries|capital of|population of|currency of|language of|flag of|continent of|where is .+ located|tell me about .+ country)\b/i;
 
 function needsSearch(text){
   if(!state.webSearch)return false;
-  return SEARCH_TRIGGERS.test(text);
+  return SEARCH_TRIGGERS.test(text)||WEATHER_TRIGGERS.test(text)||DICT_TRIGGERS.test(text)||COUNTRY_TRIGGERS.test(text);
+}
+
+// ── Open-Meteo Weather ──
+const WEATHER_TRIGGERS=/\b(weather|forecast|temperature|rain|snow|wind|humidity|hot|cold|sunny|cloudy|storm|celsius|fahrenheit|degrees)\b/i;
+async function getWeather(query){
+  try{
+    // First geocode the location from the query
+    const locMatch=query.match(/(?:weather|forecast|temperature)\s+(?:in|at|for)?\s*([a-zA-Z\s,]+?)(?:\?|$|today|tomorrow|this week)/i);
+    const loc=locMatch?locMatch[1].trim():'';
+    if(!loc)return null;
+    const geoRes=await fetch(`https://geocoding-api.open-meteo.com/v1/search?name=${encodeURIComponent(loc)}&count=1`);
+    const geoData=await geoRes.json();
+    if(!geoData.results?.length)return null;
+    const{latitude,longitude,name,country}=geoData.results[0];
+    const wxRes=await fetch(`https://api.open-meteo.com/v1/forecast?latitude=${latitude}&longitude=${longitude}&current=temperature_2m,relative_humidity_2m,wind_speed_10m,weather_code,apparent_temperature&daily=temperature_2m_max,temperature_2m_min,precipitation_sum,weather_code&temperature_unit=fahrenheit&wind_speed_unit=mph&forecast_days=3&timezone=auto`);
+    const wx=await wxRes.json();
+    const c=wx.current;const d=wx.daily;
+    const codeToDesc=code=>{const m={0:'Clear sky',1:'Mainly clear',2:'Partly cloudy',3:'Overcast',45:'Foggy',48:'Icy fog',51:'Light drizzle',53:'Drizzle',55:'Heavy drizzle',61:'Light rain',63:'Rain',65:'Heavy rain',71:'Light snow',73:'Snow',75:'Heavy snow',80:'Rain showers',81:'Heavy showers',95:'Thunderstorm',96:'Thunderstorm with hail'};return m[code]||'Unknown';};
+    let out=`[Weather for ${name}, ${country}]
+`;
+    out+=`Current: ${c.temperature_2m}°F (feels like ${c.apparent_temperature}°F), ${codeToDesc(c.weather_code)}
+`;
+    out+=`Humidity: ${c.relative_humidity_2m}%, Wind: ${c.wind_speed_10m} mph
+
+`;
+    out+='3-Day Forecast:
+';
+    for(let i=0;i<3;i++){out+=`${d.time[i]}: High ${d.temperature_2m_max[i]}°F / Low ${d.temperature_2m_min[i]}°F, ${codeToDesc(d.weather_code[i])}, Precip: ${d.precipitation_sum[i]}mm
+`;}
+    return out;
+  }catch(e){return null;}
+}
+
+// ── Dictionary API ──
+const DICT_TRIGGERS=/\b(define|definition|meaning|what does .+ mean|synonym|antonym|what is the word|how do you spell|pronunciation of)\b/i;
+async function getDictionary(query){
+  try{
+    const wordMatch=query.match(/(?:define|definition of|meaning of|what does|what is)\s+(?:the word\s+)?["']?([a-zA-Z-]+)["']?/i);
+    const word=wordMatch?wordMatch[1].trim():'';
+    if(!word)return null;
+    const res=await fetch(`https://api.dictionaryapi.dev/api/v2/entries/en/${encodeURIComponent(word)}`);
+    if(!res.ok)return null;
+    const data=await res.json();
+    if(!Array.isArray(data)||!data.length)return null;
+    const entry=data[0];
+    let out=`[Dictionary: "${entry.word}"]
+`;
+    if(entry.phonetics?.find(p=>p.text))out+=`Pronunciation: ${entry.phonetics.find(p=>p.text).text}
+`;
+    entry.meanings?.slice(0,3).forEach(m=>{
+      out+=`
+${m.partOfSpeech.toUpperCase()}:
+`;
+      m.definitions?.slice(0,2).forEach((d,i)=>{out+=`  ${i+1}. ${d.definition}
+`;if(d.example)out+=`     Example: "${d.example}"
+`;});
+      if(m.synonyms?.length)out+=`  Synonyms: ${m.synonyms.slice(0,5).join(', ')}
+`;
+      if(m.antonyms?.length)out+=`  Antonyms: ${m.antonyms.slice(0,5).join(', ')}
+`;
+    });
+    return out;
+  }catch(e){return null;}
+}
+
+// ── RestCountries ──
+const COUNTRY_TRIGGERS=/\b(country|countries|capital|population|currency|language|flag|continent|nation|gdp|area of|where is|tell me about .+(?:land|stan|ia|ica|many|ico|key|lia|sia|pan|den|ren|way|way|ium|ium|ium))\b/i;
+async function getCountryInfo(query){
+  try{
+    const nameMatch=query.match(/(?:about|country|capital of|population of|currency of|language in|flag of|tell me about)\s+([A-Z][a-zA-Z\s]+?)(?:\?|$|'s|\.)/i);
+    const name=nameMatch?nameMatch[1].trim():'';
+    if(!name||name.length<3)return null;
+    const res=await fetch(`https://restcountries.com/v3.1/name/${encodeURIComponent(name)}?fullText=false`);
+    if(!res.ok)return null;
+    const data=await res.json();
+    if(!data?.length)return null;
+    const c=data[0];
+    const currencies=c.currencies?Object.values(c.currencies).map(x=>`${x.name} (${x.symbol||'?'})`).join(', '):'N/A';
+    const languages=c.languages?Object.values(c.languages).join(', '):'N/A';
+    const capital=c.capital?.[0]||'N/A';
+    const pop=c.population?c.population.toLocaleString():'N/A';
+    const area=c.area?c.area.toLocaleString()+' km²':'N/A';
+    const region=`${c.region||''}${c.subregion?' / '+c.subregion:''}`;
+    let out=`[Country Info: ${c.name.common} ${c.flag||''}]
+`;
+    out+=`Official name: ${c.name.official}
+`;
+    out+=`Capital: ${capital}
+`;
+    out+=`Population: ${pop}
+`;
+    out+=`Area: ${area}
+`;
+    out+=`Region: ${region}
+`;
+    out+=`Currency: ${currencies}
+`;
+    out+=`Languages: ${languages}
+`;
+    if(c.timezones?.length)out+=`Timezones: ${c.timezones.slice(0,3).join(', ')}
+`;
+    if(c.borders?.length)out+=`Borders: ${c.borders.join(', ')}
+`;
+    return out;
+  }catch(e){return null;}
 }
 
 async function tavilySearch(query){
@@ -984,6 +1139,117 @@ async function tavilySearch(query){
   }
   toast('🌐 All search keys exhausted','err');
   return null;
+}
+
+// ── Open-Meteo Weather ──
+async function weatherSearch(query){
+  try{
+    // First geocode the location from query
+    const locMatch=query.match(/weather(?:\s+in)?\s+([\w\s,]+?)(?:\?|$|today|tomorrow|this week|forecast)/i);
+    const loc=locMatch?locMatch[1].trim():'current location';
+    const geoRes=await fetch(`https://geocoding-api.open-meteo.com/v1/search?name=${encodeURIComponent(loc)}&count=1&language=en&format=json`);
+    const geoData=await geoRes.json();
+    const place=geoData.results?.[0];
+    if(!place)return null;
+    const{latitude,longitude,name,country}=place;
+    const wRes=await fetch(`https://api.open-meteo.com/v1/forecast?latitude=${latitude}&longitude=${longitude}&current=temperature_2m,relative_humidity_2m,apparent_temperature,precipitation,weather_code,wind_speed_10m&daily=temperature_2m_max,temperature_2m_min,precipitation_sum,weather_code&temperature_unit=fahrenheit&wind_speed_unit=mph&precipitation_unit=inch&timezone=auto&forecast_days=5`);
+    const w=await wRes.json();
+    const c=w.current;
+    const WMO={0:'Clear sky',1:'Mainly clear',2:'Partly cloudy',3:'Overcast',45:'Foggy',48:'Icy fog',51:'Light drizzle',53:'Moderate drizzle',55:'Dense drizzle',61:'Slight rain',63:'Moderate rain',65:'Heavy rain',71:'Slight snow',73:'Moderate snow',75:'Heavy snow',80:'Slight showers',81:'Moderate showers',82:'Violent showers',95:'Thunderstorm',99:'Thunderstorm with hail'};
+    const desc=WMO[c.weather_code]||'Unknown';
+    let out=`[Weather for ${name}, ${country}]
+`;
+    out+=`Current: ${c.temperature_2m}°F, feels like ${c.apparent_temperature}°F
+`;
+    out+=`Conditions: ${desc}
+`;
+    out+=`Humidity: ${c.relative_humidity_2m}% | Wind: ${c.wind_speed_10m} mph | Precip: ${c.precipitation} in
+
+`;
+    out+=`5-Day Forecast:
+`;
+    w.daily.time.slice(0,5).forEach((d,i)=>{
+      const day=new Date(d).toLocaleDateString('en',{weekday:'short',month:'short',day:'numeric'});
+      out+=`  ${day}: High ${w.daily.temperature_2m_max[i]}°F / Low ${w.daily.temperature_2m_min[i]}°F — ${WMO[w.daily.weather_code[i]]||'Unknown'}
+`;
+    });
+    return out;
+  }catch(e){return null;}
+}
+
+// ── Dictionary API ──
+async function dictionarySearch(query){
+  try{
+    const wordMatch=query.match(/(?:define|definition of|what does|meaning of|what is)\s+["\'"]?([\w-]+)["\'"]?/i)||query.match(/([\w-]+)\s+(?:definition|meaning|synonym)/i);
+    const word=wordMatch?wordMatch[1].trim():query.trim().split(/\s+/).pop();
+    if(!word)return null;
+    const res=await fetch(`https://api.dictionaryapi.dev/api/v2/entries/en/${encodeURIComponent(word)}`);
+    if(!res.ok)return null;
+    const data=await res.json();
+    const entry=data[0];
+    let out=`[Dictionary: "${entry.word}"]
+`;
+    if(entry.phonetics?.[0]?.text)out+=`Pronunciation: ${entry.phonetics[0].text}
+`;
+    out+=`
+`;
+    entry.meanings?.slice(0,3).forEach(m=>{
+      out+=`${m.partOfSpeech.toUpperCase()}
+`;
+      m.definitions?.slice(0,2).forEach((d,i)=>{
+        out+=`  ${i+1}. ${d.definition}
+`;
+        if(d.example)out+=`     Example: "${d.example}"
+`;
+      });
+      if(m.synonyms?.length)out+=`  Synonyms: ${m.synonyms.slice(0,5).join(', ')}
+`;
+      if(m.antonyms?.length)out+=`  Antonyms: ${m.antonyms.slice(0,5).join(', ')}
+`;
+      out+=`
+`;
+    });
+    return out;
+  }catch(e){return null;}
+}
+
+// ── REST Countries ──
+async function countrySearch(query){
+  try{
+    const nameMatch=query.match(/(?:capital of|population of|currency of|language of|flag of|about|tell me about)\s+([\w\s]+?)(?:\?|$|country|nation)/i)||query.match(/([A-Z][a-z]+(?:\s+[A-Z][a-z]+)*)\s+(?:country|capital|population|currency|language)/i);
+    const name=nameMatch?nameMatch[1].trim():query.replace(/\b(country|countries|capital|population|currency|language|flag|continent|where is|located|tell me about|about)\b/gi,'').trim();
+    if(!name||name.length<2)return null;
+    const res=await fetch(`https://restcountries.com/v3.1/name/${encodeURIComponent(name)}?fullText=false`);
+    if(!res.ok)return null;
+    const data=await res.json();
+    const c=data[0];
+    const langs=Object.values(c.languages||{}).join(', ');
+    const currencies=Object.values(c.currencies||{}).map(x=>`${x.name} (${x.symbol||'?'})`).join(', ');
+    const capital=c.capital?.[0]||'N/A';
+    const pop=c.population?.toLocaleString()||'N/A';
+    const region=`${c.subregion||''}, ${c.region||''}`.replace(/^, /,'');
+    let out=`[Country Info: ${c.name.common}]
+`;
+    out+=`Official Name: ${c.name.official}
+`;
+    out+=`Capital: ${capital}
+`;
+    out+=`Population: ${pop}
+`;
+    out+=`Region: ${region}
+`;
+    out+=`Languages: ${langs||'N/A'}
+`;
+    out+=`Currency: ${currencies||'N/A'}
+`;
+    out+=`Area: ${c.area?.toLocaleString()||'N/A'} km²
+`;
+    if(c.borders?.length)out+=`Borders: ${c.borders.join(', ')}
+`;
+    if(c.timezones?.length)out+=`Timezones: ${c.timezones.slice(0,3).join(', ')}
+`;
+    return out;
+  }catch(e){return null;}
 }
 
 const buildSys=(mem,searchCtx)=>SYS_ID+(searchCtx?'\n\n'+searchCtx:'')+(mem?'\n\n'+mem:'');
