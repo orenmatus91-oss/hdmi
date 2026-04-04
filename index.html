@@ -366,6 +366,7 @@ kbd{background:rgba(255,255,255,0.07);border:1px solid var(--border2);border-rad
     <select class="model-select" id="modelSelect"></select>
     <span class="tb-title" id="topTitle"></span>
     <div class="cap-badges" id="capBadges"></div>
+    <button class="tb-btn" id="webBtn" title="Web Search">🌐</button>
     <button class="tb-btn" id="memBtn">🧠</button>
     <button class="tb-btn" id="keyBtn">🔑</button>
   </div>
@@ -385,6 +386,7 @@ kbd{background:rgba(255,255,255,0.07);border:1px solid var(--border2);border-rad
     <div class="stat-item"><span>PROVIDER</span><span class="stat-v" id="sProv">—</span></div>
     <div class="stat-item"><span>KEY</span><span class="stat-v" id="sKey">—</span></div>
     <div class="stat-item"><span>MODE</span><span class="stat-v" id="sMode">Chat</span></div>
+    <div class="stat-item"><span>SEARCH</span><span class="stat-v" id="sSearch">Off</span></div>
   </div>
   <div id="input-area">
     <div class="input-inner">
@@ -449,7 +451,18 @@ const SYS_ID=`You are HDMI (Hub for Dynamic Model Interaction), a universal AI c
 
 // ── State ──
 let currentUser=null;
-let state={providers:{},activeProviderId:null,activeModel:null,convs:[],activeConvId:null,memory:[],sidebarOpen:false,inputMode:'chat'};
+const TAVILY_KEYS=[
+  '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',
+  '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',
+  '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',
+  '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',
+  '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',
+  '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',
+  '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',
+  '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'
+];
+let tavilyKeyIdx=0;
+let state={providers:{},activeProviderId:null,activeModel:null,convs:[],activeConvId:null,memory:[],sidebarOpen:false,inputMode:'chat',webSearch:false};
 let unsubConvs=null,unsubMem=null,unsubSettings=null;
 let pendingFiles=[],typingEl=null,memExtracting=false;
 let saveTimer=null;
@@ -664,6 +677,12 @@ function setSidebar(open){
   else{sb.classList.add('closed');app.classList.add('full');app.style.left='0';ov.style.display='none';}
 }
 G('sidebarToggle').addEventListener('click',()=>setSidebar(!state.sidebarOpen));
+G('webBtn').addEventListener('click',function(){
+  state.webSearch=!state.webSearch;
+  this.classList.toggle('active',state.webSearch);
+  G('sSearch').textContent=state.webSearch?'On':'Off';
+  toast(state.webSearch?'🌐 Web search ON':'🌐 Web search OFF', state.webSearch?'ok':'');
+});
 G('overlay').addEventListener('click',()=>setSidebar(false));
 
 // ── Memory ──
@@ -887,28 +906,87 @@ async function sendToApi(conv){
   if(!allKeys.length){finishSend();toast('No valid keys','err');return;}
   const sp=allKeys.findIndex(x=>x.i===pd.activeKeyIdx);const ordered=[...allKeys.slice(sp>=0?sp:0),...allKeys.slice(0,sp>=0?sp:0)];
   const mem=state.memory.length?'User memory:\n'+state.memory.map(m=>'- '+m.text).join('\n')+'\n\n':'';
-  await tryKeys(conv,pid,ordered,0,mem);
+  // Web search injection
+  const lastMsg=(conv.messages||[]).filter(m=>m.role==='user').pop();
+  let searchCtx=null;
+  if(lastMsg&&needsSearch(lastMsg.content||'')){
+    toast('🌐 Searching the web…','info');
+    searchCtx=await tavilySearch(lastMsg.content.slice(0,200));
+    if(searchCtx)toast('🌐 Search results injected','ok');
+  }
+  await tryKeys(conv,pid,ordered,0,mem,searchCtx);
 }
 
-async function tryKeys(conv,pid,ordered,idx,mem){
+async function tryKeys(conv,pid,ordered,idx,mem,searchCtx){
   if(idx>=ordered.length){finishSend();toast('All keys failed','err');return;}
   const kObj=ordered[idx];const prov=PROVIDERS[pid];const model=state.activeModel||prov.models[0].id;
   try{
     let r;
-    if(pid==='anthropic')r=await callAnthropic(conv,prov,kObj.k,model,mem);
-    else if(pid==='google')r=await callGoogle(conv,prov,kObj.k,model,mem);
-    else if(pid==='cohere')r=await callCohere(conv,prov,kObj.k,model,mem);
-    else if(pid==='huggingface')r=await callOAI(conv,prov,kObj.k,model,mem);
-    else r=await callOAI(conv,prov,kObj.k,model,mem);
-    if(r.error){if([401,429,503,529].includes(r.status)){toast(`Key ${kObj.i+1} failed (${r.status}), trying next…`,'warn');return tryKeys(conv,pid,ordered,idx+1,mem);}finishSend();toast('Error: '+r.error,'err');return;}
+    if(pid==='anthropic')r=await callAnthropic(conv,prov,kObj.k,model,mem,searchCtx);
+    else if(pid==='google')r=await callGoogle(conv,prov,kObj.k,model,mem,searchCtx);
+    else if(pid==='cohere')r=await callCohere(conv,prov,kObj.k,model,mem,searchCtx);
+    else if(pid==='huggingface')r=await callOAI(conv,prov,kObj.k,model,mem,searchCtx);
+    else r=await callOAI(conv,prov,kObj.k,model,mem,searchCtx);
+    if(r.error){if([401,429,503,529].includes(r.status)){toast(`Key ${kObj.i+1} failed (${r.status}), trying next…`,'warn');return tryKeys(conv,pid,ordered,idx+1,mem,searchCtx);}finishSend();toast('Error: '+r.error,'err');return;}
     const sw=kObj.i!==state.providers[pid].activeKeyIdx;if(sw){state.providers[pid].activeKeyIdx=kObj.i;saveSettings();toast(`⚡ Switched to Key ${kObj.i+1}`,'warn');}
     await pushAI(conv,{role:'assistant',content:r.content,ts:Date.now(),providerId:pid,model,keySwitch:sw?kObj.i+1:undefined});
     finishSend();updateProviderUI();
     autoExtractMemory(conv,pid,kObj.k);
-  }catch(e){toast(`Key ${kObj.i+1} error, trying next…`,'warn');return tryKeys(conv,pid,ordered,idx+1,mem);}
+  }catch(e){toast(`Key ${kObj.i+1} error, trying next…`,'warn');return tryKeys(conv,pid,ordered,idx+1,mem,searchCtx);}
 }
 
-const buildSys=mem=>SYS_ID+(mem?'\n\n'+mem:'');
+// ── Web Search (Tavily) ──
+const SEARCH_TRIGGERS=/\b(today|tonight|yesterday|this week|this month|current|latest|recent|now|breaking|news|weather|price|stock|score|live|update|2024|2025|2026|who is|what is happening|trending|just announced|released|launched)\b/i;
+
+function needsSearch(text){
+  if(!state.webSearch)return false;
+  return SEARCH_TRIGGERS.test(text);
+}
+
+async function tavilySearch(query){
+  for(let attempt=0;attempt<TAVILY_KEYS.length;attempt++){
+    const key=TAVILY_KEYS[tavilyKeyIdx];
+    try{
+      const res=await fetch('https://api.tavily.com/search',{
+        method:'POST',
+        headers:{'Content-Type':'application/json'},
+        body:JSON.stringify({api_key:key,query,search_depth:'basic',max_results:5,include_answer:true})
+      });
+      if(res.status===429||res.status===401||res.status===403){
+        // This key is exhausted or invalid — try next
+        toast(`🌐 Search key ${tavilyKeyIdx+1} limit reached, switching…`,'warn');
+        tavilyKeyIdx=(tavilyKeyIdx+1)%TAVILY_KEYS.length;
+        continue;
+      }
+      if(!res.ok)return null;
+      const d=await res.json();
+      let out='[Web Search Results for: "'+query+'"]
+
+';
+      if(d.answer)out+='Summary: '+d.answer+'
+
+';
+      if(d.results?.length){
+        out+='Sources:
+';
+        d.results.slice(0,5).forEach((r,i)=>{
+          out+=`${i+1}. ${r.title}
+   ${r.url}
+   ${(r.content||'').slice(0,300)}
+
+`;
+        });
+      }
+      return out;
+    }catch(e){
+      tavilyKeyIdx=(tavilyKeyIdx+1)%TAVILY_KEYS.length;
+    }
+  }
+  toast('🌐 All search keys exhausted','err');
+  return null;
+}
+
+const buildSys=(mem,searchCtx)=>SYS_ID+(searchCtx?'\n\n'+searchCtx:'')+(mem?'\n\n'+mem:'');
 function buildMsgs(conv,prov){
   return(conv.messages||[]).map(m=>{
     if(m.files?.some(f=>f.type==='image'))return{role:m.role,content:[...m.files.filter(f=>f.type==='image').map(f=>({type:'image_url',image_url:{url:f.dataUrl}})),{type:'text',text:m.content||''}]};
@@ -916,27 +994,27 @@ function buildMsgs(conv,prov){
   }).filter(m=>m.content&&(typeof m.content==='string'?m.content.trim():true));
 }
 
-async function callOAI(conv,prov,key,model,mem){
+async function callOAI(conv,prov,key,model,mem,searchCtx){
   const endpoint=prov.endpoint.replace('{model}',model);
-  const res=await fetch(model==='dall-e-3'?prov.imageEndpoint:endpoint,{method:'POST',headers:{'Content-Type':'application/json','Authorization':'Bearer '+key},body:JSON.stringify({model,messages:[{role:'system',content:buildSys(mem)},...buildMsgs(conv,prov)],temperature:parseFloat(G('tempSlider').value),max_tokens:4096})});
+  const res=await fetch(model==='dall-e-3'?prov.imageEndpoint:endpoint,{method:'POST',headers:{'Content-Type':'application/json','Authorization':'Bearer '+key},body:JSON.stringify({model,messages:[{role:'system',content:buildSys(mem,searchCtx)},...buildMsgs(conv,prov)],temperature:parseFloat(G('tempSlider').value),max_tokens:4096})});
   const d=await res.json();if(!res.ok)return{error:d.error?.message||d.message||('HTTP '+res.status),status:res.status};
   return{content:d.choices?.[0]?.message?.content||'(No response)'};
 }
-async function callAnthropic(conv,prov,key,model,mem){
-  const res=await fetch(prov.endpoint,{method:'POST',headers:{'Content-Type':'application/json','x-api-key':key,'anthropic-version':'2023-06-01','anthropic-dangerous-direct-browser-access':'true'},body:JSON.stringify({model,system:buildSys(mem),messages:buildMsgs(conv,prov),max_tokens:4096,temperature:parseFloat(G('tempSlider').value)})});
+async function callAnthropic(conv,prov,key,model,mem,searchCtx){
+  const res=await fetch(prov.endpoint,{method:'POST',headers:{'Content-Type':'application/json','x-api-key':key,'anthropic-version':'2023-06-01','anthropic-dangerous-direct-browser-access':'true'},body:JSON.stringify({model,system:buildSys(mem,searchCtx),messages:buildMsgs(conv,prov),max_tokens:4096,temperature:parseFloat(G('tempSlider').value)})});
   const d=await res.json();if(!res.ok)return{error:d.error?.message||('HTTP '+res.status),status:res.status};
   return{content:d.content?.[0]?.text||'(No response)'};
 }
-async function callGoogle(conv,prov,key,model,mem){
+async function callGoogle(conv,prov,key,model,mem,searchCtx){
   const url=prov.endpoint.replace('{model}',model)+'?key='+key;
   const msgs=buildMsgs(conv,prov).map(m=>({role:m.role==='assistant'?'model':'user',parts:[{text:m.content}]}));
-  const res=await fetch(url,{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({systemInstruction:{parts:[{text:buildSys(mem)}]},contents:msgs,generationConfig:{temperature:parseFloat(G('tempSlider').value),maxOutputTokens:4096}})});
+  const res=await fetch(url,{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({systemInstruction:{parts:[{text:buildSys(mem,searchCtx)}]},contents:msgs,generationConfig:{temperature:parseFloat(G('tempSlider').value),maxOutputTokens:4096}})});
   const d=await res.json();if(!res.ok)return{error:d.error?.message||('HTTP '+res.status),status:res.status};
   return{content:d.candidates?.[0]?.content?.parts?.[0]?.text||'(No response)'};
 }
-async function callCohere(conv,prov,key,model,mem){
+async function callCohere(conv,prov,key,model,mem,searchCtx){
   const msgs=buildMsgs(conv,prov);const hist=msgs.slice(0,-1).map(m=>({role:m.role==='assistant'?'CHATBOT':'USER',message:m.content}));const last=msgs[msgs.length-1]?.content||'';
-  const res=await fetch(prov.endpoint,{method:'POST',headers:{'Content-Type':'application/json','Authorization':'Bearer '+key},body:JSON.stringify({model,message:last,chat_history:hist,preamble:buildSys(mem),temperature:parseFloat(G('tempSlider').value)})});
+  const res=await fetch(prov.endpoint,{method:'POST',headers:{'Content-Type':'application/json','Authorization':'Bearer '+key},body:JSON.stringify({model,message:last,chat_history:hist,preamble:buildSys(mem,searchCtx),temperature:parseFloat(G('tempSlider').value)})});
   const d=await res.json();if(!res.ok)return{error:d.message||('HTTP '+res.status),status:res.status};
   return{content:d.text||'(No response)'};
 }
