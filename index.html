@@ -38,11 +38,18 @@ body{font-family:var(--sans);color:var(--text);background:var(--bg);font-size:14
 .login-title{font-family:var(--head);font-size:36px;font-weight:700;background:var(--grad);-webkit-background-clip:text;-webkit-text-fill-color:transparent;background-clip:text;}
 .login-sub-label{font-family:var(--mono);font-size:11px;color:var(--text3);letter-spacing:0.1em;}
 .login-desc{font-size:15px;color:var(--text2);max-width:320px;line-height:1.65;}
-.google-btn{display:flex;align-items:center;gap:12px;background:#fff;border:none;border-radius:12px;padding:14px 28px;cursor:pointer;font-family:var(--sans);font-size:15px;font-weight:600;color:#1a1a1a;box-shadow:0 4px 20px rgba(0,0,0,0.4);transition:all 0.2s;}
-.google-btn:hover{transform:translateY(-2px);box-shadow:0 8px 28px rgba(0,0,0,0.5);}
-.google-btn:disabled{opacity:0.6;cursor:wait;transform:none;}
-.google-btn svg{width:22px;height:22px;flex-shrink:0;}
+.google-btn{display:none;}
 .login-note{font-size:11px;color:var(--text3);max-width:280px;line-height:1.5;}
+.auth-form{display:flex;flex-direction:column;gap:10px;width:100%;max-width:320px;}
+.auth-input{background:rgba(255,255,255,0.06);border:1px solid var(--border2);border-radius:var(--radius2);color:var(--text);font-family:var(--sans);font-size:15px;padding:13px 16px;outline:none;transition:border-color 0.2s;width:100%;}
+.auth-input:focus{border-color:var(--accent);}
+.auth-input::placeholder{color:var(--text3);}
+.auth-submit-btn{background:var(--grad);border:none;border-radius:var(--radius2);color:#fff;font-family:var(--sans);font-size:15px;font-weight:600;padding:13px;cursor:pointer;transition:opacity 0.2s;width:100%;}
+.auth-submit-btn:hover{opacity:0.88;}
+.auth-submit-btn:disabled{opacity:0.5;cursor:wait;}
+.auth-toggle{font-size:13px;color:var(--text3);cursor:pointer;background:none;border:none;text-decoration:underline;padding:4px;}
+.auth-toggle:hover{color:var(--text2);}
+.auth-error{font-size:12px;color:#f87171;text-align:center;min-height:16px;}
 
 /* SIDEBAR */
 #sidebar{position:fixed;top:0;left:0;bottom:0;width:var(--sb-width);z-index:50;display:flex;flex-direction:column;background:rgba(9,9,18,0.97);border-right:1px solid var(--border);backdrop-filter:blur(20px);transition:transform 0.26s cubic-bezier(0.4,0,0.2,1);overflow:hidden;}
@@ -302,9 +309,16 @@ kbd{background:rgba(255,255,255,0.07);border:1px solid var(--border2);border-rad
   <div class="login-sub-label">HUB FOR DYNAMIC MODEL INTERACTION</div>
   <div class="login-desc">Your universal AI client. Sign in to sync conversations, memories, and API keys across all your devices.</div>
   <button class="google-btn" id="googleSignInBtn">
-    <svg viewBox="0 0 24 24"><path d="M22.56 12.25c0-.78-.07-1.53-.2-2.25H12v4.26h5.92c-.26 1.37-1.04 2.53-2.21 3.31v2.77h3.57c2.08-1.92 3.28-4.74 3.28-8.09z" fill="#4285F4"/><path d="M12 23c2.97 0 5.46-.98 7.28-2.66l-3.57-2.77c-.98.66-2.23 1.06-3.71 1.06-2.86 0-5.29-1.93-6.16-4.53H2.18v2.84C3.99 20.53 7.7 23 12 23z" fill="#34A853"/><path d="M5.84 14.09c-.22-.66-.35-1.36-.35-2.09s.13-1.43.35-2.09V7.07H2.18C1.43 8.55 1 10.22 1 12s.43 3.45 1.18 4.93l2.85-2.22.81-.62z" fill="#FBBC05"/><path d="M12 5.38c1.62 0 3.06.56 4.21 1.64l3.15-3.15C17.45 2.09 14.97 1 12 1 7.7 1 3.99 3.47 2.18 7.07l3.66 2.84c.87-2.6 3.3-4.53 6.16-4.53z" fill="#EA4335"/></svg>
-    Continue with Google
   </button>
+  <div class="auth-form">
+    <input class="auth-input" id="authEmail" type="email" placeholder="Email address" autocomplete="email">
+    <input class="auth-input" id="authPassword" type="password" placeholder="Password" autocomplete="current-password">
+    <div class="auth-error" id="authError"></div>
+    <button class="auth-submit-btn" id="authSubmitBtn">Sign In</button>
+    <div style="text-align:center;">
+      <button class="auth-toggle" id="authToggleBtn">Don't have an account? Create one</button>
+    </div>
+  </div>
   <div class="login-note">Your data is stored privately in your own Firebase account.</div>
 </div>
 
@@ -409,20 +423,13 @@ kbd{background:rgba(255,255,255,0.07);border:1px solid var(--border2);border-rad
 
 <script type="module">
 import{initializeApp}from'https://www.gstatic.com/firebasejs/10.12.0/firebase-app.js';
-import{getAuth,GoogleAuthProvider,signInWithPopup,signInWithRedirect,getRedirectResult,signOut,onAuthStateChanged}from'https://www.gstatic.com/firebasejs/10.12.0/firebase-auth.js';
+import{getAuth,createUserWithEmailAndPassword,signInWithEmailAndPassword,signOut,onAuthStateChanged}from'https://www.gstatic.com/firebasejs/10.12.0/firebase-auth.js';
 import{getFirestore,doc,setDoc,onSnapshot,collection,query,orderBy,addDoc,deleteDoc,serverTimestamp}from'https://www.gstatic.com/firebasejs/10.12.0/firebase-firestore.js';
 
 const fbConfig={apiKey:"AIzaSyB84MJLKWrgZg0QG0cAYFAVrJDFoR0LV50",authDomain:"hdmi-a67b4.firebaseapp.com",projectId:"hdmi-a67b4",storageBucket:"hdmi-a67b4.firebasestorage.app",messagingSenderId:"88618577552",appId:"1:88618577552:web:4d163585f057b887e43215"};
 const fbApp=initializeApp(fbConfig);
 const auth=getAuth(fbApp);
 const db=getFirestore(fbApp);
-
-// Handle redirect result (mobile sign-in)
-getRedirectResult(auth).catch(e=>{
-  if(e&&e.code!=='auth/null-user'&&e.code!=='auth/no-auth-event'){
-    toast('Sign in failed: '+(e.message||'Unknown error'),'err');
-  }
-});
 
 // ── Constants ──
 const EMOJIS=['💬','🌙','⚡','🔮','🌊','🎯','🧠','✨','🔬','🎨','🚀','💡','🌿','🎭','🔥','🪐','🦋','🎵','🏔','🌺'];
@@ -471,21 +478,36 @@ const mCol=()=>collection(db,'users',currentUser.uid,'memory');
 const mDoc=id=>doc(db,'users',currentUser.uid,'memory',id);
 
 // ── Auth ──
-G('googleSignInBtn').addEventListener('click',async()=>{
+// ── Email/Password Auth ──
+let authMode='signin';
+G('authToggleBtn').addEventListener('click',()=>{
+  authMode=authMode==='signin'?'signup':'signin';
+  G('authSubmitBtn').textContent=authMode==='signin'?'Sign In':'Create Account';
+  G('authToggleBtn').textContent=authMode==='signin'?"Don't have an account? Create one":"Already have an account? Sign in";
+  G('authError').textContent='';
+});
+G('authSubmitBtn').addEventListener('click',async()=>{
+  const email=G('authEmail').value.trim();
+  const pass=G('authPassword').value;
+  G('authError').textContent='';
+  if(!email||!pass){G('authError').textContent='Please enter email and password.';return;}
+  G('authSubmitBtn').disabled=true;
+  G('authSubmitBtn').textContent='Please wait…';
   try{
-    G('googleSignInBtn').textContent='Signing in…';G('googleSignInBtn').disabled=true;
-    const isMobile=/iPhone|iPad|iPod|Android/i.test(navigator.userAgent);
-    if(isMobile){
-      await signInWithRedirect(auth,new GoogleAuthProvider());
+    if(authMode==='signup'){
+      await createUserWithEmailAndPassword(auth,email,pass);
     }else{
-      await signInWithPopup(auth,new GoogleAuthProvider());
+      await signInWithEmailAndPassword(auth,email,pass);
     }
   }catch(e){
-    G('googleSignInBtn').innerHTML=`<svg viewBox="0 0 24 24" width="22" height="22"><path d="M22.56 12.25c0-.78-.07-1.53-.2-2.25H12v4.26h5.92c-.26 1.37-1.04 2.53-2.21 3.31v2.77h3.57c2.08-1.92 3.28-4.74 3.28-8.09z" fill="#4285F4"/><path d="M12 23c2.97 0 5.46-.98 7.28-2.66l-3.57-2.77c-.98.66-2.23 1.06-3.71 1.06-2.86 0-5.29-1.93-6.16-4.53H2.18v2.84C3.99 20.53 7.7 23 12 23z" fill="#34A853"/><path d="M5.84 14.09c-.22-.66-.35-1.36-.35-2.09s.13-1.43.35-2.09V7.07H2.18C1.43 8.55 1 10.22 1 12s.43 3.45 1.18 4.93l2.85-2.22.81-.62z" fill="#FBBC05"/><path d="M12 5.38c1.62 0 3.06.56 4.21 1.64l3.15-3.15C17.45 2.09 14.97 1 12 1 7.7 1 3.99 3.47 2.18 7.07l3.66 2.84c.87-2.6 3.3-4.53 6.16-4.53z" fill="#EA4335"/></svg> Continue with Google`;
-    G('googleSignInBtn').disabled=false;
-    toast('Sign in failed: '+(e.message||'Unknown error'),'err');
+    const msgs={'auth/email-already-in-use':'That email is already registered. Sign in instead.','auth/user-not-found':'No account found. Create one first.','auth/wrong-password':'Incorrect password.','auth/invalid-email':'Please enter a valid email.','auth/weak-password':'Password must be at least 6 characters.','auth/invalid-credential':'Incorrect email or password.'};
+    G('authError').textContent=msgs[e.code]||e.message||'Something went wrong.';
+    G('authSubmitBtn').disabled=false;
+    G('authSubmitBtn').textContent=authMode==='signin'?'Sign In':'Create Account';
   }
 });
+G('authPassword').addEventListener('keydown',e=>{if(e.key==='Enter')G('authSubmitBtn').click();});
+G('authEmail').addEventListener('keydown',e=>{if(e.key==='Enter')G('authPassword').focus();});
 
 G('signOutBtn').addEventListener('click',async()=>{
   if(!confirm('Sign out of HDMI?'))return;
@@ -512,11 +534,12 @@ onAuthStateChanged(auth,user=>{
 
 function updateUserUI(){
   if(!currentUser)return;
-  G('sbUserName').textContent=currentUser.displayName||'User';
+  const name=currentUser.displayName||(currentUser.email||'User').split('@')[0];
+  G('sbUserName').textContent=name;
   G('sbUserEmail').textContent=currentUser.email||'';
   const av=G('sbAvatar');
   if(currentUser.photoURL){av.outerHTML=`<img class="sb-avatar" id="sbAvatar" src="${currentUser.photoURL}" alt="">`;}
-  else{av.textContent=(currentUser.displayName||'U')[0].toUpperCase();}
+  else{av.textContent=name[0].toUpperCase();}
 }
 
 // ── Firestore Listeners ──
